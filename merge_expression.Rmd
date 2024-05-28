@@ -1,0 +1,179 @@
+---
+title: "merge_expression"
+author: "Jingyi"
+date: "2024-05-17"
+output: html_document
+---
+
+Load expression matrix from g1, g2, and pilot. 
+```{r}
+# Load library
+library(readxl)
+# Get file path
+path_g1 <- "/Users/xujingyi/Documents/szbl/metastatic cell genomic/results/met map/g1.xlsx"
+path_g2 <- "/Users/xujingyi/Documents/szbl/metastatic cell genomic/results/met map/g2.xlsx"
+path_pilot <- "/Users/xujingyi/Documents/szbl/metastatic cell genomic/results/met map/pilot.xlsx"
+
+# get file names
+sheetnames_g1 <- excel_sheets(path_g1)
+sheetnames_g2 <- excel_sheets(path_g2)
+sheetnames_pilot <- excel_sheets(path_pilot)
+
+# Load sheets into a list
+sheets_g1 <- lapply(sheetnames_g1, function(sheet) {
+  read_excel(path_g1, sheet = sheet)
+})
+
+sheets_g2 <- lapply(sheetnames_g2, function(sheet) {
+  read_excel(path_g2, sheet = sheet)
+})
+
+sheets_pilot <- lapply(sheetnames_pilot, function(sheet) {
+  read_excel(path_pilot, sheet = sheet)
+})
+
+# rename list name
+names(sheets_g1) <- sheetnames_g1
+names(sheets_g2) <- sheetnames_g2
+names(sheets_pilot) <- sheetnames_pilot
+
+# get gene name
+gene_symbol <- sheets_g1["brain_bone"][[1]][,1]
+colnames(gene_symbol)[1] <- "Gene" 
+
+```
+
+Allocate all samples from one organs together
+```{r}
+library(dplyr)
+library(tidyr)
+
+# Define a function to select columns starting with an organ and merge
+merge_organ_columns <- function(sheet_list, organs, suffix) {
+  organ_columns <- lapply(organs, function(organ) {
+    organ_list <- list()
+    
+    for (sheet in sheet_list) {
+      selected_cols <- sheet %>%
+        select(starts_with(organ))
+      col_names <- colnames(selected_cols)
+      
+      for (col_name in col_names) {
+        new_col_name <- paste0(col_name, "_", suffix)
+        if (!new_col_name %in% names(organ_list)) {
+          organ_list[[new_col_name]] <- selected_cols[[col_name]]
+        }
+      }
+    }
+    
+    as.data.frame(organ_list)
+  })
+  
+  names(organ_columns) <- organs
+  return(organ_columns)
+}
+
+# Define the organs of interest
+organs <- c("brain", "bone", "liver", "lung")
+
+# Merge organ columns from each list with appropriate suffixes
+organ_g1 <- merge_organ_columns(sheets_g1, organs, "g1")
+organ_g2 <- merge_organ_columns(sheets_g2, organs, "g2")
+organ_pilot <- merge_organ_columns(sheets_pilot, organs, "pilot")
+
+# Combine all organ columns into separate data frames and remove duplicates
+combine_and_remove_duplicates <- function(organ_dfs) {
+  combined <- bind_cols(organ_dfs)
+  combined <- combined[, !duplicated(colnames(combined))]
+  return(combined)
+}
+
+combined_brain <- combine_and_remove_duplicates(list(organ_g1$brain, organ_g2$brain, organ_pilot$brain))
+combined_bone <- combine_and_remove_duplicates(list(organ_g1$bone, organ_g2$bone, organ_pilot$bone))
+combined_liver <- combine_and_remove_duplicates(list(organ_g1$liver, organ_g2$liver, organ_pilot$liver))
+combined_lung <- combine_and_remove_duplicates(list(organ_g1$lung, organ_g2$lung, organ_pilot$lung))
+
+```
+
+Use sva to remove bench effect
+
+```{r}
+library(sva)
+library(reshape2)
+
+# Function to remove batch effect using SVA and plot box plots
+process_and_plot <- function(df, batchType,organ_name) {
+  # Convert data frame to matrix for sva
+  expression_matrix <- as.matrix(df)
+  dimnames = list(rownames(expression_matrix), colnames(expression_matrix))
+  data_before = matrix(as.numeric(as.matrix(expression_matrix)), nrow = nrow(expression_matrix), dimnames = dimnames)
+  # boxplot(data_before)
+  outTab = data.frame(ComBat(expression_matrix, batchType, par.prior = TRUE))
+  # boxplot(outTab)
+  return(outTab)
+}
+
+# Create batch information
+batchType_brain = c(rep("g1", 6), rep("g2", 5), rep("pilot", 8))
+batchType_bone = c(rep("g1", 8), rep("g2", 5), rep("pilot", 5))
+batchType_liver = c(rep("g1", 7), rep("g2", 7), rep("pilot", 6))
+batchType_lung = c(rep("g1", 5), rep("g2", 7), rep("pilot", 6))
+
+
+# Process and plot each organ
+adjusted_brain <- process_and_plot(combined_brain, batchType_brain,  "Brain")
+adjusted_bone <- process_and_plot(combined_bone, batchType_bone, "Bone")
+adjusted_liver <- process_and_plot(combined_liver, batchType_liver, "Liver")
+adjusted_lung <- process_and_plot(combined_lung, batchType_lung,  "Lung")
+
+# Generate the data frames of adjusted expression (expression removing batch effect)
+adjusted_brain <- cbind(gene_symbol,adjusted_brain)
+adjusted_bone <- cbind(gene_symbol,adjusted_bone)
+adjusted_liver <- cbind(gene_symbol,adjusted_liver)
+adjusted_lung <- cbind(gene_symbol,adjusted_lung)
+
+# Generate the data frames of rsem expression (expression without removing batch effect)
+combined_brain <- cbind(gene_symbol,combined_brain)
+combined_bone <- cbind(gene_symbol,combined_bone)
+combined_liver <- cbind(gene_symbol,combined_liver)
+combined_lung <- cbind(gene_symbol,combined_lung)
+
+```
+
+Generate output
+```{r}
+# set wording directory
+setwd("/Users/xujingyi/Documents/szbl/metastatic cell genomic/results/met map")
+library(openxlsx)
+
+wb_before <- createWorkbook()
+# Write dataframes into different sheets
+addWorksheet(wb_before, "brain")
+writeData(wb_before, "brain", combined_brain)
+addWorksheet(wb_before, "bone")
+writeData(wb_before, "bone", combined_bone)
+addWorksheet(wb_before, "liver")
+writeData(wb_before, "liver", combined_liver)
+addWorksheet(wb_before, "lung")
+writeData(wb_before, "lung", combined_lung)
+
+# Save excel file
+saveWorkbook(wb_before, "rsem_expression.xlsx", overwrite = TRUE)
+
+wb_adjusted <- createWorkbook()
+# Write dataframes into different sheets
+addWorksheet(wb_adjusted, "brain")
+writeData(wb_adjusted, "brain", adjusted_brain)
+addWorksheet(wb_adjusted, "bone")
+writeData(wb_adjusted, "bone", adjusted_bone)
+addWorksheet(wb_adjusted, "liver")
+writeData(wb_adjusted, "liver", adjusted_liver)
+addWorksheet(wb_adjusted, "lung")
+writeData(wb_adjusted, "lung", adjusted_lung)
+
+# Save excel file
+saveWorkbook(wb_adjusted, "adjusted_expression.xlsx", overwrite = TRUE)
+
+
+```
+
